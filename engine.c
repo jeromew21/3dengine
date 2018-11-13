@@ -12,8 +12,6 @@
 
 //For movement, do not change translations of points, change camera/padding
 
-void print(char* o) { printf(o); printf("\n"); }
-
 typedef struct Vector3 {
     double x;
     double y;
@@ -38,6 +36,8 @@ typedef struct Mesh {
     int num_polygons;
     int polygons_added;
     int is_valid;
+    Vector3 center;
+    Vector3 rotation;
 } Mesh;
 
 typedef struct World {
@@ -46,9 +46,7 @@ typedef struct World {
     int meshes_added;
 } World;
 
-void print_vec(Vector3 v) {
-    printf("x: %f y: %f z: %f\n", v.x, v.y, v.z);
-}
+void print(char* o) { printf(o); printf("\n"); }
 
 void matrix_x_matrix(double m1[][3], double m2[][3], double result[][3]) {
     int i, j, k;
@@ -73,12 +71,16 @@ Vector3 matrix_x_vector(double m[][3], Vector3 v) {
     return vect;
 }
 
+void print_vec(Vector3 v) {
+    printf("x: %f y: %f z: %f\n", v.x, v.y, v.z);
+}
+
 int x2d(Vector3* v, Vector3* t) {
-    return padding_left + (v->x+(-1*t->x))*(focal_length/((v->z+t->z)+focal_length));
+    return padding_left + (v->x+(-1*t->x))*(focal_length/((v->z+(t->z-focal_length))+focal_length));
 }
 
 int y2d(Vector3* v, Vector3* t) {
-    return HEIGHT - (padding_bottom + (v->y+t->y)*(focal_length/((v->z+t->z)+focal_length)));
+    return HEIGHT - (padding_bottom + (v->y+t->y)*(focal_length/((v->z+(t->z-focal_length))+focal_length)));
 }
 
 Polygon* create_polygon(int num_vertices, SDL_Color* color) {
@@ -96,6 +98,8 @@ Mesh* create_mesh(int num_polygons) {
     mesh->num_polygons = num_polygons;
     mesh->polygons_added = 0;
     mesh->is_valid = 1;
+    mesh->center.x = 0; mesh->center.y = 0; mesh->center.y = 0;
+    mesh->rotation.x = 0; mesh->rotation.y = 0; mesh->rotation.y = 0;
     return mesh;
 }
 
@@ -111,7 +115,47 @@ World* create_world(int num_meshes) {
     return world;
 }
 
-void rotate_all_in_world(World* world, Vector3 axes) {
+void rotate_mesh(Mesh* mesh) { //Affects local_transform
+    Vector3* rotation = &(mesh->rotation);
+    Vector3 center = mesh->center;
+    double rx[3][3] = {
+        {1, 0, 0},
+        {0, cos(rotation->x), -1*sin(rotation->x)},
+        {0, sin(rotation->x), cos(rotation->x)}
+    };
+    double ry[3][3] = {
+        {cos(rotation->y), 0, sin(rotation->y)},
+        {0, 1, 0},
+        {-1*sin(rotation->y), 0, cos(rotation->y)}
+    };
+    double rz[3][3] = {
+        {cos(rotation->z), -1*sin(rotation->z), 0},
+        {sin(rotation->z), cos(rotation->z), 0},
+        {0, 0, 1}
+    };
+    double res1[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+    matrix_x_matrix(ry, rx, res1);
+    double transform[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+    matrix_x_matrix(rz, res1, transform);
+
+    Vertex* vert;
+    Vector3 vect;
+    int i, k;
+    for (i = 0; i < mesh->num_polygons; i++) {
+        for (k = 0; k < mesh->polygons[i]->num_vertices; k++) {
+            vert = &(mesh->polygons[i]->sequence[k]);
+            vect.x = vert->absolute_position.x - center.x,
+            vect.y = vert->absolute_position.y - center.y,
+            vect.z = vert->absolute_position.z - center.z,
+            vert->local_transform = matrix_x_vector(transform, vect);
+            vert->local_transform.x += center.x;
+            vert->local_transform.y += center.y;
+            vert->local_transform.z += center.z;
+        }
+    }
+}
+
+void rotate_all_in_world(World* world, Vector3 axes, Vector3 origin) { //affects perspective
     double rx[3][3] = {
         {1, 0, 0},
         {0, cos(axes.x), -1*sin(axes.x)},
@@ -135,16 +179,25 @@ void rotate_all_in_world(World* world, Vector3 axes) {
 
     int i, j, k;
     Vertex* vertex;
+    Vector3 vect;
     for (i = 0; i < world->meshes_added; i++) {
+        rotate_mesh(world->meshes[i]);
         for (j = 0; j < world->meshes[i]->num_polygons; j++) {
             for (k = 0; k < world->meshes[i]->polygons[j]->num_vertices; k++) {
                 vertex = &(world->meshes[i]->polygons[j]->sequence[k]);
-                vertex->perspective = matrix_x_vector(transform, vertex->local_transform);
+                vect.x = vertex->local_transform.x - origin.x,
+                vect.y = vertex->local_transform.y - origin.y,
+                vect.z = vertex->local_transform.z - origin.z,
+                vertex->perspective = matrix_x_vector(transform, vect);
+                vertex->perspective.x += origin.x;
+                vertex->perspective.y += origin.y;
+                vertex->perspective.z += origin.z;
             }
         }
     }
 }
 
+//Add a vertex to a polygon
 void push_vertex(Polygon* poly, double x, double y, double z) {
     //printf("Inserting at location %i\n", poly->vertices_added);
     //memcpy(poly->sequence + poly->vertices_added, v, sizeof(Vector3));
@@ -158,16 +211,21 @@ void push_vertex(Polygon* poly, double x, double y, double z) {
     poly->vertices_added += 1;
 }
 
+//Add Polygon to a mesh
 void add_polygon(Mesh* mesh, Polygon* poly) {
     mesh->polygons[mesh->polygons_added] = poly;
     mesh->polygons_added += 1;
 }
 
+
+//Add mesh to world
 void add_mesh(World* world, Mesh* mesh) {
     world->meshes[world->meshes_added] = mesh;
     world->meshes_added += 1;
 }
 
+
+//Render a polygon
 void render_polygon(SDL_Renderer* renderer, Polygon* polygon, Vector3* translation) { //Add translations here
     //Shading happens here
     Vertex* p = polygon->sequence;
@@ -184,6 +242,7 @@ void render_polygon(SDL_Renderer* renderer, Polygon* polygon, Vector3* translati
     SDL_RenderDrawLine(renderer, x2d(&vect, translation), y2d(&vect, translation), x2d(&first, translation), y2d(&first, translation));
 }
 
+//Render each of a mesh's polygons
 void render_mesh(SDL_Renderer* renderer, Mesh* mesh, Vector3* translation) {
     Polygon** p = mesh->polygons;
     int i = 0;
@@ -194,6 +253,7 @@ void render_mesh(SDL_Renderer* renderer, Mesh* mesh, Vector3* translation) {
     }
 }
 
+//Render each mesh in a world
 void render_world(SDL_Renderer* renderer, World* world, Vector3* translation) {
     Mesh** p = world->meshes;
     int i = 0;
@@ -214,7 +274,7 @@ void free_world(World* world) {
         free(world->meshes[i]);
     }
     free(world);
-    print("Freed world.");
+    print("Freed world");
 }
 
 Mesh* create_cube_mesh(int x, int y, int z, int w, int h, int l, SDL_Color* color) {
@@ -262,6 +322,9 @@ Mesh* create_cube_mesh(int x, int y, int z, int w, int h, int l, SDL_Color* colo
     push_vertex(polygon6, right, bot, front);
 
     Mesh* cube = create_mesh(6);
+    cube->center.x = x;
+    cube->center.y = y;
+    cube->center.z = z;
     add_polygon(cube, polygon1);
     add_polygon(cube, polygon2);
     add_polygon(cube, polygon3);
@@ -292,38 +355,48 @@ Mesh* create_axes_mesh() {
     return axes;
 }
 
-int main(int argc, char* argv[])
-{
+int main(int argc, char* argv[]) {
+    int FRAME_LIMIT = 1000/300;
+    int move_speed = 10;
+    SDL_Color white = { 255, 255, 255 };        
+    Vector3 zero; zero.x = 0; zero.y = 0; zero.z = 0;
+
     if (SDL_Init(SDL_INIT_VIDEO) == 0) {
         SDL_Window* window = NULL;
         SDL_Renderer* renderer = NULL;
 
-        if (TTF_Init() < 0) {
-            // Error handling code
-            print("TTF init failed, exiting.");
-            exit(0);
-        }
-
-        Mesh* axes = create_axes_mesh();
-
-        SDL_Color white = { 255, 255, 255 };        
-
-        Mesh* cube = create_cube_mesh(100, 100, 100, 400, 100, 100, &white);
-        Mesh* cube1 = create_cube_mesh(200, 100, 100, 100, 400, 100, &white);
-        Mesh* cube2 = create_cube_mesh(200, 100, 100, 100, 100, 400, &white);
-
-        World* world = create_world(4);
-        add_mesh(world, axes);
-        add_mesh(world, cube);
-        add_mesh(world, cube1);
-        add_mesh(world, cube2);
-
-        Vector3 world_translation; world_translation.x = 0; world_translation.y = 0; world_translation.z = 0;
-        Vector3 world_rotation;
-
-
         if (SDL_CreateWindowAndRenderer(WIDTH, HEIGHT, 0, &window, &renderer) == 0) {
-            Uint16 pixels[16*16] = {  // ...or with raw pixel data:
+            print("Window created. Setting up...");
+
+            if (TTF_Init() < 0) {
+                // Error handling code
+                print("TTF init failed, exiting");
+                exit(0);
+            }
+
+            TTF_Font* font = TTF_OpenFont("/usr/share/fonts/TTF/arial.ttf", 20);
+            if (font == NULL) {
+                print("Font is null, exiting");
+                exit(0);
+            }
+            print("Fonts initialized");
+
+            Mesh* axes = create_axes_mesh();
+
+            Mesh* cube = create_cube_mesh(100, 100, 100, 400, 100, 100, &white);
+            Mesh* cube1 = create_cube_mesh(200, 100, 100, 100, 400, 100, &white);
+            Mesh* cube2 = create_cube_mesh(200, 100, 100, 100, 100, 400, &white);
+
+            World* world = create_world(4);
+            add_mesh(world, axes);
+            add_mesh(world, cube);
+            add_mesh(world, cube1);
+            add_mesh(world, cube2);
+
+            Vector3 subject_translation; subject_translation.x = 0; subject_translation.y = 0; subject_translation.z = 3000;
+            Vector3 subject_rotation; subject_rotation.x = 0; subject_rotation.y = 0; subject_rotation.z = 0;
+
+            Uint16 pixels[16*16] = {  // raw pixel data:
                 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff,
                 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff,
                 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff,
@@ -357,58 +430,50 @@ int main(int argc, char* argv[])
                 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff,
                 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff, 0x0fff
             };
-            SDL_Surface *surface;
-            surface = SDL_CreateRGBSurfaceFrom(pixels,16,16,16,16*2,0x0f00,0x00f0,0x000f,0xf000);
-            SDL_SetWindowIcon(window, surface);
-            SDL_FreeSurface(surface);
+            SDL_Surface *icon_surface;
+            icon_surface = SDL_CreateRGBSurfaceFrom(pixels,16,16,16,16*2,0x0f00,0x00f0,0x000f,0xf000);
+            SDL_SetWindowIcon(window, icon_surface);
+            SDL_FreeSurface(icon_surface);
                         
             SDL_SetWindowTitle(window, "engine"); 
-            print("Window created. Starting game loop...");
             SDL_bool done = SDL_FALSE;
 
-            SDL_Color foregroundColor = { 255, 255, 255 };
-            SDL_Color backgroundColor = { 0, 0, 255 };
-
-            TTF_Font* font = TTF_OpenFont("/usr/share/fonts/TTF/arial.ttf", 14);
-            if (font == NULL) {
-                print("Font is null, exiting.");
-                exit(0);
-            }
             char fps_chars[200];
-            SDL_Surface* textSurface = TTF_RenderText_Solid(font, " FPS", foregroundColor);
+            SDL_Surface* textSurface = TTF_RenderText_Blended(font, "???? FPS x: ???? y: ???? z: ????", white);
             SDL_Texture* message = SDL_CreateTextureFromSurface(renderer, textSurface);
             SDL_Rect textLocation = { 0, 0, 0, 0 };
+            textLocation.w = textSurface->w;
+            textLocation.h = textSurface->h;
 
             #define FPS_INTERVAL 1.0 //seconds.
             Uint32 fps_lasttime = SDL_GetTicks(); //the last recorded time.
             Uint32 fps_current; //the current FPS.
-            Uint32 fps_frames = 0; //frames passed since the last recorded fps.
+            Uint32 fps_frames = 0; //frames passed since the last recorded fps. At the tick of a second this will capture the number of frames rendered during that second
 
-            int move_speed = 10;
-
+            //Main game loop
+            print("Starting game loop...");
             while (!done) {
                 SDL_Event event;
 
                 SDL_SetRenderDrawColor(renderer, 30, 30, 30, SDL_ALPHA_OPAQUE);
-                SDL_RenderClear(renderer);
+                SDL_RenderClear(renderer); //I think this just clears the screen
 
-                SDL_SetRenderDrawColor(renderer, 255, 255, 255, SDL_ALPHA_OPAQUE);
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, SDL_ALPHA_OPAQUE); //Set draw color to white
 
-                rotate_all_in_world(world, world_rotation);
-                render_world(renderer, world, &world_translation);
+                rotate_all_in_world(world, subject_rotation, subject_translation); //Perform rotations based on subject location
+                render_world(renderer, world, &subject_translation);
 
-                SDL_RenderCopy(renderer, message, NULL, &textLocation);
+                SDL_RenderCopy(renderer, message, NULL, &textLocation); //Render fps display
 
-                SDL_RenderPresent(renderer);
+                SDL_RenderPresent(renderer); //Not sure exactly what this does but it's important
 
                 fps_frames++;
-                if (fps_lasttime < SDL_GetTicks() - FPS_INTERVAL*1000)
-                {
+                if (fps_lasttime < SDL_GetTicks() - FPS_INTERVAL*1000) { //We have hit a second: now display the number of frames that were rendered during that second
                     fps_lasttime = SDL_GetTicks();
                     fps_current = fps_frames;
                     fps_frames = 0;
-                    sprintf(fps_chars, "%d FPS x: %.2f y: %.2f z: %.2f", fps_current, world_translation.x, world_translation.y, world_translation.z);
-                    textSurface = TTF_RenderText_Solid(font, fps_chars, foregroundColor);
+                    sprintf(fps_chars, "%d FPS x: %.2f y: %.2f z: %.2f", fps_current, subject_translation.x, subject_translation.y, subject_translation.z);
+                    textSurface = TTF_RenderText_Blended(font, fps_chars, white);
                     message = SDL_CreateTextureFromSurface(renderer, textSurface);
                     textLocation.w = textSurface->w;
                     textLocation.h = textSurface->h;
@@ -422,20 +487,28 @@ int main(int argc, char* argv[])
                         case SDL_KEYDOWN:
                             switch( event.key.keysym.sym ){
                                 case SDLK_LEFT:
-                                    printf("L %i", move_speed);
-                                    world_translation.x -= move_speed;
+                                    print("Left");
+                                    subject_translation.x -= move_speed; //Will need to implement move forward based on direction
                                     break;
                                 case SDLK_RIGHT:
-                                    print("R");
-                                    world_translation.x += move_speed;
+                                    print("Right");
+                                    subject_translation.x += move_speed;
                                     break;
                                 case SDLK_UP:
-                                    print("U");
-                                    world_translation.z -= move_speed;
+                                    print("Up");
+                                    subject_translation.z -= move_speed;
                                     break;
                                 case SDLK_DOWN:
-                                    print("D");
-                                    world_translation.z += move_speed;
+                                    print("Down");
+                                    subject_translation.z += move_speed;
+                                    break;
+                                case SDLK_a:
+                                    print("a");
+                                    subject_rotation.y -= 0.001;
+                                    break;
+                                case SDLK_d:
+                                    print("d");
+                                    subject_rotation.y += 0.001;
                                     break;
                                 default:
                                     break;
@@ -447,24 +520,24 @@ int main(int argc, char* argv[])
                             break;
                     }
                 }
+                //For now we want to see what the max framerate is, so comment out the delay
+                //SDL_Delay(FRAME_LIMIT);
             } //end game loop
+            print("Cleaning up..."); //hopefully this gets everything
             SDL_FreeSurface(textSurface);
             SDL_DestroyTexture(message);
+            free_world(world);
             TTF_CloseFont(font);
             TTF_Quit();
-        }
-
-        print("Done.");
-        free_world(world);
-
-
+        } //end if
         if (renderer) {
             SDL_DestroyRenderer(renderer);
         }
         if (window) {
             SDL_DestroyWindow(window);
         }
-    }
+    } //end if
     SDL_Quit();
+    print("Done");
     return 0;
 }
