@@ -115,6 +115,7 @@ World* create_world(int num_meshes) {
     return world;
 }
 
+//rotate a mesh locally
 void rotate_mesh(Mesh* mesh) { //Affects local_transform
     Vector3* rotation = &(mesh->rotation);
     Vector3 center = mesh->center;
@@ -217,21 +218,28 @@ void add_polygon(Mesh* mesh, Polygon* poly) {
     mesh->polygons_added += 1;
 }
 
-
 //Add mesh to world
 void add_mesh(World* world, Mesh* mesh) {
     world->meshes[world->meshes_added] = mesh;
     world->meshes_added += 1;
 }
 
-
 //Render a polygon
 void render_polygon(SDL_Renderer* renderer, Polygon* polygon, Vector3* translation) { //Add translations here
     //Shading happens here
+    //Fill then outline. We'll use white outlines for debugging now.
     Vertex* p = polygon->sequence;
     Vector3 vect;
     Vector3 last = (*p).perspective;
     Vector3 first = (*p).perspective;
+    //fillerino
+    if (polygon->num_vertices > 2) {
+        SDL_SetRenderDrawColor(renderer, polygon->color.r, polygon->color.g, polygon->color.b, SDL_ALPHA_OPAQUE);
+        SDL_RenderDrawPoint(renderer, 100, 100);
+    }
+
+    //outline in white.
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, SDL_ALPHA_OPAQUE);
     int i = 0;
     while (i < polygon->num_vertices) {
         vect = (*p).perspective;
@@ -458,7 +466,7 @@ int main(int argc, char* argv[]) {
                 SDL_SetRenderDrawColor(renderer, 30, 30, 30, SDL_ALPHA_OPAQUE);
                 SDL_RenderClear(renderer); //I think this just clears the screen
 
-                SDL_SetRenderDrawColor(renderer, 255, 255, 255, SDL_ALPHA_OPAQUE); //Set draw color to white
+                //SDL_SetRenderDrawColor(renderer, 255, 255, 255, SDL_ALPHA_OPAQUE); //Set draw color to white
 
                 rotate_all_in_world(world, subject_rotation, subject_translation); //Perform rotations based on subject location
                 render_world(renderer, world, &subject_translation);
@@ -487,23 +495,23 @@ int main(int argc, char* argv[]) {
                         case SDL_KEYDOWN:
                             switch( event.key.keysym.sym ){
                                 case SDLK_LEFT:
-                                    print("Left");
+                                    //print("Left");
                                     subject_translation.x -= move_speed; //Will need to implement move forward based on direction
                                     break;
                                 case SDLK_RIGHT:
-                                    print("Right");
+                                    //print("Right");
                                     subject_translation.x += move_speed;
                                     break;
                                 case SDLK_UP:
-                                    print("Up");
+                                    //print("Up");
                                     subject_translation.z -= move_speed;
                                     break;
                                 case SDLK_DOWN:
-                                    print("Down");
+                                    //print("Down");
                                     subject_translation.z += move_speed;
                                     break;
                                 case SDLK_a:
-                                    print("a");
+                                    //print("a");
                                     subject_rotation.y -= 0.001;
                                     break;
                                 case SDLK_d:
