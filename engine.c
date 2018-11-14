@@ -35,7 +35,7 @@ typedef struct Mesh {
     Polygon** polygons; //List of pointers to polygons
     int num_polygons;
     int polygons_added;
-    int is_valid;
+    int re_render;
     Vector3 center;
     Vector3 rotation;
 } Mesh;
@@ -45,6 +45,11 @@ typedef struct World {
     int num_meshes;
     int meshes_added;
 } World;
+
+typedef struct RowBucket {
+    int xvalues[5]; //Sorta dymanic arr going here
+    int size;
+} RowBucket;
 
 void print(char* o) { printf(o); printf("\n"); }
 
@@ -56,6 +61,13 @@ void matrix_x_matrix(double m1[][3], double m2[][3], double result[][3]) {
                 result[i][j] += m1[i][k] * m2[k][j];
             }
         }
+    }
+}
+
+void add_to_row_bucket(RowBucket* rb, int xval) {
+    if (rb->size < 5) {
+        rb->xvalues[rb->size] = xval;
+        rb->size += 1;
     }
 }
 
@@ -97,7 +109,7 @@ Mesh* create_mesh(int num_polygons) {
     mesh->polygons = malloc(sizeof(Polygon*)*num_polygons);
     mesh->num_polygons = num_polygons;
     mesh->polygons_added = 0;
-    mesh->is_valid = 1;
+    mesh->re_render = 1;
     mesh->center.x = 0; mesh->center.y = 0; mesh->center.y = 0;
     mesh->rotation.x = 0; mesh->rotation.y = 0; mesh->rotation.y = 0;
     return mesh;
@@ -154,6 +166,7 @@ void rotate_mesh(Mesh* mesh) { //Affects local_transform
             vert->local_transform.z += center.z;
         }
     }
+    mesh->re_render = 1;
 }
 
 void rotate_all_in_world(World* world, Vector3 axes, Vector3 origin) { //affects perspective
@@ -182,7 +195,7 @@ void rotate_all_in_world(World* world, Vector3 axes, Vector3 origin) { //affects
     Vertex* vertex;
     Vector3 vect;
     for (i = 0; i < world->meshes_added; i++) {
-        rotate_mesh(world->meshes[i]);
+        rotate_mesh(world->meshes[i]); //Updates local_transform
         for (j = 0; j < world->meshes[i]->num_polygons; j++) {
             for (k = 0; k < world->meshes[i]->polygons[j]->num_vertices; k++) {
                 vertex = &(world->meshes[i]->polygons[j]->sequence[k]);
@@ -228,26 +241,127 @@ void add_mesh(World* world, Mesh* mesh) {
 void render_polygon(SDL_Renderer* renderer, Polygon* polygon, Vector3* translation) { //Add translations here
     //Shading happens here
     //Fill then outline. We'll use white outlines for debugging now.
-    Vertex* p = polygon->sequence;
-    Vector3 vect;
-    Vector3 last = (*p).perspective;
-    Vector3 first = (*p).perspective;
-    //fillerino
-    if (polygon->num_vertices > 2) {
+    int num_edges = polygon->num_vertices;
+    int yMax = -32767;
+    int yMin = 32767;
+    int xMax = -32767;
+    int xMin = 32767;
+
+    int edges[num_edges][2]; //array of [x1, y1, x2, y2] arrays
+    int i = 0;
+    int pointX; int pointY;
+    while (i < num_edges) {
+        pointX = x2d(&(polygon->sequence[i].perspective), translation); 
+        pointY = y2d(&(polygon->sequence[i].perspective), translation); 
+        if (pointY > yMax) { yMax = pointY; }
+        if (pointY < yMin) { yMin = pointY; }
+        if (pointX > xMax) { xMax = pointX; }
+        if (pointX < xMin) { xMin = pointX; }
+        edges[i][0] = pointX;
+        edges[i][1] = pointY;
+        if (i == num_edges - 1) {
+            edges[i][2] = edges[0][0]; //If last vertex special case
+            edges[i][3] = edges[0][1];
+        } else {
+            edges[i][2] = edges[i+1][0];
+            edges[i][3] = edges[i+1][1];
+        }
+        i++;
+    }
+    int h = yMax-yMin;
+    RowBucket* row_buckets = malloc(sizeof(RowBucket)*h); //only need 2 assuming a convex polygon. boy this is easy with convex only, are we being too general by using this alg?
+    i = 0;
+    while (i < h) {
+        row_buckets[i].size = 0;
+        i++;
+    }
+    i = 0;
+    int x1, y1, x2, y2, m, x, y;
+    while (i < num_edges) {
+        if (edges[i][0] < edges[i][2]) {
+            x1 = edges[i][0];
+            y1 = edges[i][1];
+            x2 = edges[i][2];
+            y2 = edges[i][3];
+        } else {
+            x2 = edges[i][0];
+            y2 = edges[i][1];
+            x1 = edges[i][2];
+            y1 = edges[i][3];
+        }
+        if (x2-x1 == 0) {
+            //TODO: vert edge. will have to go up or down
+        } else {
+            m = (y2-y1)/(x2-x1);
+            if (m == 0) {
+                //TODO: horiz edge
+            } else {
+                for (x = x1; x < x2; x++) {
+                    y = m*(x-x1) + y1;
+                    y = y - yMin;
+                    //add x to row bucket with this y
+                    if (y >= 0 && y < h) {
+                        add_to_row_bucket(row_buckets+y, x);
+                    }
+                }
+            }
+        }
+        i++;
+    }
+    if (num_edges > 1) {
+        //fillerino
         SDL_SetRenderDrawColor(renderer, polygon->color.r, polygon->color.g, polygon->color.b, SDL_ALPHA_OPAQUE);
-        SDL_RenderDrawPoint(renderer, 100, 100);
+
+        //Go through each row-bucket (which contain edge points, set aside by shared y)
+        //Sort each row bucket
+        //We will have to add yMin to the result
+        i = 0;
+        int t, b;
+        int g, key, j;
+        int ub;
+        while (i < h) {
+            for (g = 1; g < row_buckets[i].size; g++) { 
+                //SORT YOLO
+                key = row_buckets[i].xvalues[g]; 
+                j = g-1; 
+            
+                /* Move elements of arr[0..i-1], that are 
+                    greater than key, to one position ahead 
+                    of their current position */
+                while (j >= 0 && row_buckets[i].xvalues[j] > key) 
+                { 
+                    row_buckets[i].xvalues[j+1] = row_buckets[i].xvalues[j]; 
+                    j = j-1; 
+                } 
+                row_buckets[i].xvalues[j+1] = key; 
+            }
+            
+            t = 0;
+            b = 1;
+            while (t < row_buckets[i].size) {
+                if (1 || b == 1) {
+                    if (t < row_buckets[i].size-1) {
+                        ub = row_buckets[i].xvalues[t+1];
+                        SDL_RenderDrawLine(renderer, row_buckets[i].xvalues[t], yMin + i, ub, yMin + i);
+                    }
+                    b = 0;
+                } else {
+                    b = 1;
+                }
+                t++;
+            }
+            i++;
+        }
     }
 
-    //outline in white.
+    //outline in white
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, SDL_ALPHA_OPAQUE);
-    int i = 0;
-    while (i < polygon->num_vertices) {
-        vect = (*p).perspective;
-        SDL_RenderDrawLine(renderer, x2d(&last, translation), y2d(&last, translation), x2d(&vect, translation), y2d(&vect, translation));
-        last = vect;
-        p++; i++;
+    i = 0;
+    while (i < num_edges) {
+        SDL_RenderDrawLine(renderer, edges[i][0], edges[i][1], edges[i][2], edges[i][3]);
+        i++;
     }
-    SDL_RenderDrawLine(renderer, x2d(&vect, translation), y2d(&vect, translation), x2d(&first, translation), y2d(&first, translation));
+    free(row_buckets);
 }
 
 //Render each of a mesh's polygons
@@ -267,8 +381,11 @@ void render_world(SDL_Renderer* renderer, World* world, Vector3* translation) {
     int i = 0;
     while (i < world->meshes_added) {
         //Render meshes in order.
-        //if (*p == NULL) { break; }        
-        render_mesh(renderer, *p, translation);
+        //if (*p == NULL) { break; }
+        if ((*p)->re_render == 1) {     
+            render_mesh(renderer, *p, translation);
+            (*p)->re_render = 0;
+        }
         i++; p++;
     }
 }
@@ -394,12 +511,18 @@ int main(int argc, char* argv[]) {
             Mesh* cube = create_cube_mesh(100, 100, 100, 400, 100, 100, &white);
             Mesh* cube1 = create_cube_mesh(200, 100, 100, 100, 400, 100, &white);
             Mesh* cube2 = create_cube_mesh(200, 100, 100, 100, 100, 400, &white);
+            Mesh* cube3 = create_cube_mesh(100, 300, 100, 400, 100, 100, &white);
+            Mesh* cube4 = create_cube_mesh(200, 300, 100, 100, 400, 100, &white);
+            Mesh* cube5 = create_cube_mesh(200, 300, 100, 100, 100, 400, &white);
 
-            World* world = create_world(4);
+            World* world = create_world(7);
             add_mesh(world, axes);
             add_mesh(world, cube);
             add_mesh(world, cube1);
             add_mesh(world, cube2);
+            add_mesh(world, cube3);
+            add_mesh(world, cube4);
+            add_mesh(world, cube5);
 
             Vector3 subject_translation; subject_translation.x = 0; subject_translation.y = 0; subject_translation.z = 3000;
             Vector3 subject_rotation; subject_rotation.x = 0; subject_rotation.y = 0; subject_rotation.z = 0;
@@ -468,6 +591,11 @@ int main(int argc, char* argv[]) {
 
                 //SDL_SetRenderDrawColor(renderer, 255, 255, 255, SDL_ALPHA_OPAQUE); //Set draw color to white
 
+                cube1->rotation.x += 0.0001;
+                cube1->rotation.y += 0.0001;
+                cube1->rotation.z += 0.0001;
+
+                
                 rotate_all_in_world(world, subject_rotation, subject_translation); //Perform rotations based on subject location
                 render_world(renderer, world, &subject_translation);
 
@@ -515,7 +643,7 @@ int main(int argc, char* argv[]) {
                                     subject_rotation.y -= 0.001;
                                     break;
                                 case SDLK_d:
-                                    print("d");
+                                    //print("d");
                                     subject_rotation.y += 0.001;
                                     break;
                                 default:
